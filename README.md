@@ -66,6 +66,7 @@ Usage
 Current Status & Notes
 
     Analog inputs are currently untested and will be checked shortly.
+    This software is to be used at your own risk.
 
 License
 

@@ -63,10 +63,9 @@ Usage
 
     There are options to log to an external file, start when Windows starts, minimize to the system tray on close, and start minimized. The application log box will show you the digital inputs coming from your devices.
 
-Current Status & Notes
 
-    Analog inputs are currently untested and will be checked shortly.
     This software is to be used at your own risk.
+
 
 License
 
@@ -86,5 +85,7 @@ This software makes use of the following open-source libraries:
     tkinter: The standard Python library for GUI development.
 
     configparser: A standard Python library used for handling the configuration file.
+
+    
 
 The core functionality is built upon the concepts of bridging DCS-BIOS UDP exports, for which credit goes to the developers of the DCS-BIOS project, as well as the original dcs_bios_bridge.py script by Justin.

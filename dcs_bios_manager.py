@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-
+#added support for RS485 masters
 import socket
 import struct
 import serial
@@ -18,6 +18,7 @@ import serial.tools.list_ports
 try:
     from pystray import Icon as pystray_Icon, Menu as pystray_Menu, MenuItem as pystray_MenuItem
     from PIL import Image, ImageDraw, ImageFont
+
     HAS_PYSTRAY = True
 except ImportError:
     HAS_PYSTRAY = False
@@ -26,6 +27,7 @@ except ImportError:
 # Optional libraries for Windows-specific functionality
 try:
     import winreg
+
     HAS_WINREG = True
 except ImportError:
     HAS_WINREG = False
@@ -33,18 +35,20 @@ except ImportError:
 
 try:
     import serial.tools.list_ports
+
     HAS_LIST_PORTS = True
 except ImportError:
     HAS_LIST_PORTS = False
     # pyserial.tools.list_ports not found. COM port detection will be limited.
 
+
 class DCSBIOSSerialManager(tk.Tk):
     """
     A standalone application for managing DCS-BIOS serial communication.
-    
+
     This application provides a graphical user interface (GUI) to configure and
     manage multiple serial devices, bridging UDP data from DCS-BIOS to the
-    connected serial ports.
+    connected serial ports. Now includes RS485 master support.
     """
 
     # Dictionary of common microcontrollers with their default baud rates.
@@ -52,6 +56,7 @@ class DCSBIOSSerialManager(tk.Tk):
         "Arduino Uno": 250000,
         "Arduino Nano": 250000,
         "Arduino Mega": 250000,
+        "Arduino Mega (RS485 Master)": 115200,  # RS485 typically uses lower baud rates
         "Raspberry Pi Pico (RP2040)": 115200,
         "Raspberry Pi Pico 2 (RP2350)": 115200,
         "Arduino Pro Micro": 115200,
@@ -65,7 +70,7 @@ class DCSBIOSSerialManager(tk.Tk):
     UDP_DEST_IP = "127.0.0.1"
     UDP_DEST_PORT = 7778
     MULTICAST_GROUP = "239.255.50.10"
-    
+
     # Registry key for 'Start with Windows' functionality
     RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
     APP_NAME = "DCSBIOSSerialManager"
@@ -81,20 +86,17 @@ class DCSBIOSSerialManager(tk.Tk):
             self.geometry("800x600")
         except tk.TclError:
             self.log_message("Warning: Failed to set window geometry.")
-        
+
         self.style = ttk.Style(self)
         self.set_windows_theme()
 
-        # Fix for PyInstaller path issue
-        self.base_path = self.get_app_path()
-        self.config_file = os.path.join(self.base_path, 'config.ini')
-        self.log_file = os.path.join(self.base_path, 'DCSBIOS_serial_log.txt')
-        
+        self.config_file = 'config.ini'
+        self.log_file = 'DCSBIOS_serial_log.txt'
         self.devices = []
         self.serial_connections = {}
         self.serial_to_udp_threads = {}
         self.stop_threads = threading.Event()
-        
+
         # Initialize all control variables at the start
         self.logging_enabled = tk.BooleanVar(value=False)
         self.minimize_to_tray_var = tk.BooleanVar(value=True)
@@ -110,7 +112,7 @@ class DCSBIOSSerialManager(tk.Tk):
         if self.start_minimized_var.get() and HAS_PYSTRAY:
             self.withdraw()
             self.create_tray_icon()
-        
+
         # Set up atexit handler for clean exit
         atexit.register(self.on_exit)
 
@@ -119,21 +121,6 @@ class DCSBIOSSerialManager(tk.Tk):
         self.setup_udp_socket()
         self.udp_thread = threading.Thread(target=self.udp_to_serial, daemon=True)
         self.udp_thread.start()
-
-    def get_app_path(self):
-        """
-        Determines the correct base path for the application, handling PyInstaller.
-        This ensures that the config and log files are always read from and written to
-        the same directory as the executable.
-        """
-        if getattr(sys, 'frozen', False):
-            # The application is frozen (e.g., by PyInstaller)
-            # Use the directory of the executable
-            return os.path.dirname(sys.executable)
-        else:
-            # The application is not frozen
-            # Use the directory of the script file
-            return os.path.dirname(os.path.abspath(__file__))
 
     def set_windows_theme(self):
         """Sets a theme that attempts to match the Windows theme."""
@@ -169,30 +156,31 @@ class DCSBIOSSerialManager(tk.Tk):
         options_frame = ttk.LabelFrame(self.main_frame, text="Options", padding="10")
         options_frame.pack(fill=tk.X, padx=5, pady=5)
 
-        ttk.Checkbutton(options_frame, text="Log to external file", variable=self.logging_enabled, command=self.toggle_logging).pack(anchor=tk.W)
-        
+        ttk.Checkbutton(options_frame, text="Log to external file", variable=self.logging_enabled,
+                        command=self.toggle_logging).pack(anchor=tk.W)
+
         # 'Start with Windows' checkbox
-        ttk.Checkbutton(options_frame, text="Start with Windows", variable=self.start_with_windows_var, 
-                        command=self.toggle_start_with_windows, 
+        ttk.Checkbutton(options_frame, text="Start with Windows", variable=self.start_with_windows_var,
+                        command=self.toggle_start_with_windows,
                         state=tk.NORMAL if HAS_WINREG else tk.DISABLED).pack(anchor=tk.W)
-        
+
         # 'Minimize to system tray' checkbox
-        ttk.Checkbutton(options_frame, text="Minimize to system tray on close", variable=self.minimize_to_tray_var, 
+        ttk.Checkbutton(options_frame, text="Minimize to system tray on close", variable=self.minimize_to_tray_var,
                         command=self.save_config,
                         state=tk.NORMAL if HAS_PYSTRAY else tk.DISABLED).pack(anchor=tk.W)
-        
+
         # 'Start minimized' checkbox
-        ttk.Checkbutton(options_frame, text="Start minimized to tray", variable=self.start_minimized_var, 
+        ttk.Checkbutton(options_frame, text="Start minimized to tray", variable=self.start_minimized_var,
                         command=self.save_config,
                         state=tk.NORMAL if HAS_PYSTRAY else tk.DISABLED).pack(anchor=tk.W)
-        
+
         # Log frame
         log_frame = ttk.LabelFrame(self.main_frame, text="Application Log", padding="10")
         log_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        
+
         log_scrollbar = ttk.Scrollbar(log_frame)
         log_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        
+
         self.log_text = tk.Text(log_frame, wrap=tk.WORD, state=tk.DISABLED, yscrollcommand=log_scrollbar.set)
         self.log_text.pack(fill=tk.BOTH, expand=True)
         log_scrollbar.config(command=self.log_text.yview)
@@ -212,20 +200,23 @@ class DCSBIOSSerialManager(tk.Tk):
         for i, device in enumerate(self.devices):
             device_frame = ttk.Frame(self.device_list_frame, padding="5")
             device_frame.pack(fill=tk.X, pady=2)
-            
+
             # Use an internal variable for the checkbox state to manage it better
             device['enabled_var'] = tk.BooleanVar(value=device.get('enabled', False))
             device['enabled_var'].trace_add('write', lambda name, index, mode, d=device: self.toggle_device_status(d))
-            
+
             ttk.Checkbutton(device_frame, variable=device['enabled_var'], command=None).pack(side=tk.LEFT)
-            
-            info_label = f"{device['name']} - COM Port: {device.get('com_port', 'N/A')}, Baud: {device['baud_rate']}"
+
+            rs485_indicator = " (RS485 Master)" if device.get('is_rs485', False) else ""
+            info_label = f"{device['name']}{rs485_indicator} - COM Port: {device.get('com_port', 'N/A')}, Baud: {device['baud_rate']}"
             ttk.Label(device_frame, text=info_label).pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
-            
-            edit_button = ttk.Button(device_frame, text="Edit", width=6, command=lambda d=device: self.open_add_device_window(d))
+
+            edit_button = ttk.Button(device_frame, text="Edit", width=6,
+                                     command=lambda d=device: self.open_add_device_window(d))
             edit_button.pack(side=tk.RIGHT, padx=2)
-            
-            delete_button = ttk.Button(device_frame, text="Delete", width=6, command=lambda d=device: self.delete_device(d))
+
+            delete_button = ttk.Button(device_frame, text="Delete", width=6,
+                                       command=lambda d=device: self.delete_device(d))
             delete_button.pack(side=tk.RIGHT)
 
             if device['enabled_var'].get():
@@ -237,7 +228,7 @@ class DCSBIOSSerialManager(tk.Tk):
         """Returns a list of available COM ports and their full info objects."""
         if not HAS_LIST_PORTS:
             return [], []
-        
+
         ports = serial.tools.list_ports.comports()
         return [port.device for port in ports], ports
 
@@ -248,11 +239,10 @@ class DCSBIOSSerialManager(tk.Tk):
         return sorted(list(set(available_ports) - used_ports))
 
     def open_add_device_window(self, device_to_edit=None):
-        """Opens a new window to add or edit a device profile."""
+        """Opens a new window to add or edit a device profile with RS485 support."""
         add_window = tk.Toplevel(self)
         add_window.title("Add/Edit Device")
-        # Increased window height for better layout
-        add_window.geometry("450x450")
+        add_window.geometry("450x550")  # Increased height for RS485 options
         add_window.grab_set()
 
         is_editing = device_to_edit is not None
@@ -261,7 +251,9 @@ class DCSBIOSSerialManager(tk.Tk):
         name_var = tk.StringVar(value=device_to_edit.get('name', '') if is_editing else '')
         com_port_var = tk.StringVar(value=device_to_edit.get('com_port', '') if is_editing else '')
         baud_rate_var = tk.IntVar(value=device_to_edit.get('baud_rate', 115200) if is_editing else 115200)
-        
+        is_rs485_var = tk.BooleanVar(value=device_to_edit.get('is_rs485', False) if is_editing else False)
+        rs485_delay_var = tk.DoubleVar(value=device_to_edit.get('rs485_delay', 0.01) if is_editing else 0.01)
+
         temp_commands = device_to_edit.get('commands', set()) if is_editing else set()
 
         # Frame for form elements
@@ -271,16 +263,25 @@ class DCSBIOSSerialManager(tk.Tk):
         # Microcontroller type dropdown
         ttk.Label(form_frame, text="Microcontroller Type:").pack(anchor=tk.W)
         mc_options = list(self.MICROCONTROLLER_BAUDRATES.keys()) + ["Custom"]
-        
-        default_mc = random.choice(list(self.MICROCONTROLLER_BAUDRATES.keys())) if self.MICROCONTROLLER_BAUDRATES else "Custom"
+
+        default_mc = random.choice(
+            list(self.MICROCONTROLLER_BAUDRATES.keys())) if self.MICROCONTROLLER_BAUDRATES else "Custom"
         mc_var = tk.StringVar(value=device_to_edit.get('name', '') if is_editing else default_mc)
-        
+
         mc_dropdown = ttk.Combobox(form_frame, textvariable=mc_var, values=mc_options, state="readonly")
         mc_dropdown.pack(fill=tk.X, pady=(0, 10))
-        mc_dropdown.bind("<<ComboboxSelected>>", lambda event: self.update_baud_rate(mc_var.get(), baud_rate_var))
+
+        def on_mc_change(event):
+            self.update_baud_rate(mc_var.get(), baud_rate_var)
+            # Auto-detect RS485 from name
+            is_rs485_var.set('RS485 Master' in mc_var.get())
+
+        mc_dropdown.bind("<<ComboboxSelected>>", on_mc_change)
 
         if not is_editing:
             self.update_baud_rate(default_mc, baud_rate_var)
+            # Auto-detect RS485 from initial selection
+            is_rs485_var.set('RS485 Master' in default_mc)
 
         # Device Name
         ttk.Label(form_frame, text="Device Name:").pack(anchor=tk.W)
@@ -289,33 +290,51 @@ class DCSBIOSSerialManager(tk.Tk):
         # COM Port Dropdown
         ttk.Label(form_frame, text="COM Port:").pack(anchor=tk.W)
         all_ports, _ = self.get_available_com_ports()
-        
+
         # Add the current port if editing and it's not in the list
         if is_editing and device_to_edit['com_port'] not in all_ports:
             all_ports.insert(0, device_to_edit['com_port'])
-        
-        com_port_combobox = ttk.Combobox(form_frame, textvariable=com_port_var, values=sorted(all_ports), state="readonly")
+
+        com_port_combobox = ttk.Combobox(form_frame, textvariable=com_port_var, values=sorted(all_ports),
+                                         state="readonly")
         com_port_combobox.pack(fill=tk.X, pady=(0, 10))
         if is_editing and device_to_edit['com_port'] in all_ports:
             com_port_combobox.set(device_to_edit['com_port'])
-        
+
         # Baud Rate
         ttk.Label(form_frame, text="Baud Rate:").pack(anchor=tk.W)
         baud_entry = ttk.Entry(form_frame, textvariable=baud_rate_var)
         baud_entry.pack(fill=tk.X, pady=(0, 10))
 
+        # RS485 Configuration Frame
+        rs485_frame = ttk.LabelFrame(form_frame, text="RS485 Configuration", padding="5")
+        rs485_frame.pack(fill=tk.X, pady=(0, 10))
+
+        ttk.Checkbutton(rs485_frame, text="This device is an RS485 Master",
+                        variable=is_rs485_var).pack(anchor=tk.W)
+
+        ttk.Label(rs485_frame, text="RS485 Transmission Delay (seconds):").pack(anchor=tk.W)
+        ttk.Entry(rs485_frame, textvariable=rs485_delay_var, width=10).pack(anchor=tk.W, pady=(0, 5))
+
+        ttk.Label(rs485_frame, text="Recommended: 0.01-0.02 for RS485",
+                  font=("Helvetica", 8)).pack(anchor=tk.W)
+
         # Record Inputs button
-        record_button = ttk.Button(form_frame, text="Record Inputs", 
-                                   command=lambda: self.open_command_fingerprint_window(add_window, com_port_var.get(), baud_rate_var.get(), temp_commands))
+        record_button = ttk.Button(form_frame, text="Record Inputs",
+                                   command=lambda: self.open_command_fingerprint_window(add_window, com_port_var.get(),
+                                                                                        baud_rate_var.get(),
+                                                                                        temp_commands))
         record_button.pack(pady=(10, 0))
-        
+
         def save_device():
             name = name_var.get().strip()
             com_port = com_port_var.get().strip().upper()
             try:
                 baud_rate = int(baud_rate_var.get())
+                rs485_delay = float(rs485_delay_var.get())
             except ValueError:
-                messagebox.showerror("Error", "Baud rate must be a number.", parent=add_window)
+                messagebox.showerror("Error", "Baud rate must be a number and RS485 delay must be a decimal.",
+                                     parent=add_window)
                 return
 
             if not name or not com_port:
@@ -323,16 +342,18 @@ class DCSBIOSSerialManager(tk.Tk):
                 return
 
             if not temp_commands:
-                if not messagebox.askyesno("No Inputs Recorded", 
-                                          "You have not recorded any inputs for this device. This may cause issues with automatic port detection.\n\nDo you want to save anyway?"):
+                if not messagebox.askyesno("No Inputs Recorded",
+                                           "You have not recorded any inputs for this device. This may cause issues with automatic port detection.\n\nDo you want to save anyway?"):
                     return
-            
+
             new_device = {
                 'name': name,
                 'com_port': com_port,
                 'baud_rate': baud_rate,
                 'enabled': device_to_edit.get('enabled', False) if is_editing else False,
-                'commands': temp_commands
+                'commands': temp_commands,
+                'is_rs485': is_rs485_var.get(),
+                'rs485_delay': rs485_delay
             }
 
             if is_editing:
@@ -344,7 +365,8 @@ class DCSBIOSSerialManager(tk.Tk):
             add_window.destroy()
 
         # The save button is now wider and has more padding
-        ttk.Button(form_frame, text="Save" if not is_editing else "Update", command=save_device, width=20).pack(pady=(10, 20))
+        ttk.Button(form_frame, text="Save" if not is_editing else "Update", command=save_device, width=20).pack(
+            pady=(10, 20))
 
     def open_command_fingerprint_window(self, parent_window, com_port, baud_rate, commands_set):
         """Opens a new window to record a device's inputs."""
@@ -355,7 +377,7 @@ class DCSBIOSSerialManager(tk.Tk):
         # Store a list of devices that are currently enabled
         was_enabled = [device for device in self.devices if device.get('enabled', False)]
         self.pause_all_active_devices()
-        
+
         fingerprint_window = tk.Toplevel(parent_window)
         fingerprint_window.title(f"Recording Inputs on {com_port}")
         # Increased height for better log visibility
@@ -387,10 +409,10 @@ class DCSBIOSSerialManager(tk.Tk):
                 commands_set.clear()
                 recording.clear()
                 update_log("Starting recording...")
-                
+
                 start_button.configure(text="Stop", command=stop_recording)
-                
-                commands_thread = threading.Thread(target=self.listen_for_commands, 
+
+                commands_thread = threading.Thread(target=self.listen_for_commands,
                                                    args=(ser, recording, commands_set, update_log), daemon=True)
                 commands_thread.start()
             except serial.SerialException as e:
@@ -414,7 +436,7 @@ class DCSBIOSSerialManager(tk.Tk):
             # Resume devices that were active
             self.resume_paused_devices(was_enabled)
             fingerprint_window.destroy()
-        
+
         # The start button is now wider
         start_button = ttk.Button(main_frame, text="Start Recording", command=start_recording, width=20)
         start_button.pack(pady=(10, 0))
@@ -428,17 +450,17 @@ class DCSBIOSSerialManager(tk.Tk):
         for device in list(self.devices):
             if device.get('enabled', False):
                 device['enabled'] = False
-                device['enabled_var'].set(False) # Update the UI checkbox
+                device['enabled_var'].set(False)  # Update the UI checkbox
                 self.stop_device_threads(device)
-    
+
     def resume_paused_devices(self, was_enabled_list):
         """Restarts the devices that were paused for input recording."""
         self.log_message("Resuming previously active devices...")
         # Use a list of device objects to re-enable them
         for device in was_enabled_list:
             device['enabled'] = True
-            device['enabled_var'].set(True) # Update the UI checkbox
-        
+            device['enabled_var'].set(True)  # Update the UI checkbox
+
         # A full update of the display will trigger the threads to restart
         self.update_device_list_display()
         self.save_config()
@@ -469,18 +491,18 @@ class DCSBIOSSerialManager(tk.Tk):
         if selected_mc != "Custom":
             baud_rate_var.set(self.MICROCONTROLLER_BAUDRATES.get(selected_mc, 115200))
         else:
-            baud_rate_var.set(115200) # Default for Custom
+            baud_rate_var.set(115200)  # Default for Custom
 
     def toggle_device_status(self, device):
         """Toggles the enabled/disabled status of a device."""
         is_enabled = device['enabled_var'].get()
         device['enabled'] = is_enabled
-        
+
         if is_enabled:
             self.start_device_threads(device)
         else:
             self.stop_device_threads(device)
-        
+
         self.save_config()
 
     def delete_device(self, device_to_delete):
@@ -509,7 +531,7 @@ class DCSBIOSSerialManager(tk.Tk):
     def start_device_threads(self, device):
         """Starts the serial-to-UDP thread for a specific device."""
         if device.get('com_port') in self.serial_connections:
-            return # Already running
+            return  # Already running
 
         # Initialize mismatch counter
         device['mismatch_count'] = 0
@@ -517,8 +539,10 @@ class DCSBIOSSerialManager(tk.Tk):
         try:
             ser = serial.Serial(device['com_port'], device['baud_rate'], timeout=0.1)
             self.serial_connections[device['com_port']] = ser
-            self.log_message(f"Connected to serial: {device['name']} on {device['com_port']} at {device['baud_rate']} baud")
-            
+            rs485_info = " (RS485 Master)" if device.get('is_rs485', False) else ""
+            self.log_message(
+                f"Connected to serial: {device['name']}{rs485_info} on {device['com_port']} at {device['baud_rate']} baud")
+
             stop_event = threading.Event()
             self.serial_to_udp_threads[device['com_port']] = threading.Thread(
                 target=self.serial_to_udp, args=(ser, stop_event, device), daemon=True
@@ -529,10 +553,10 @@ class DCSBIOSSerialManager(tk.Tk):
         except serial.SerialException as e:
             self.log_message(f"[SERIAL ERROR] Failed to connect to {device['com_port']}: {e}")
             if "PermissionError" in str(e):
-                messagebox.showerror("Port in Use", 
+                messagebox.showerror("Port in Use",
                                      f"Could not open port {device['com_port']}. It may be in use by another application (e.g., Arduino IDE). "
                                      f"Please close the other application and try again.")
-            
+
             # Disable the device in the UI and config
             device['enabled_var'].set(False)
             device['enabled'] = False
@@ -544,14 +568,14 @@ class DCSBIOSSerialManager(tk.Tk):
         com_port = device.get('com_port')
         if not com_port or com_port not in self.serial_to_udp_threads:
             return
-        
+
         self.log_message(f"Stopping thread for {device['name']}...")
         self.serial_to_udp_threads[com_port].stop_event.set()
         # Wait for the thread to join
         if self.serial_to_udp_threads[com_port].is_alive():
             self.serial_to_udp_threads[com_port].join(timeout=1)
         del self.serial_to_udp_threads[com_port]
-    
+
         if com_port in self.serial_connections:
             try:
                 self.serial_connections[com_port].close()
@@ -562,43 +586,70 @@ class DCSBIOSSerialManager(tk.Tk):
 
     def serial_to_udp(self, ser, stop_event, device_info):
         """
-        Thread function to read from a serial port and send to UDP.
+        Thread function to read from a serial port and send to UDP with RS485 support.
         Also monitors for mismatched commands.
         """
         device_name = device_info['name']
         known_commands = device_info.get('commands', set())
-        
+        is_rs485 = device_info.get('is_rs485', False)
+
+        # RS485 master needs different handling
+        if is_rs485:
+            read_timeout = 0.5  # Longer timeout for RS485 responses
+            ser.timeout = read_timeout
+
         while not stop_event.is_set():
             try:
-                if ser and ser.is_open and ser.in_waiting:
-                    data = ser.read(ser.in_waiting)
-                    if data:
-                        clean_data = data.replace(b'\r\n', b'\n').replace(b'\r', b'\n')
-                        decoded_data = clean_data.decode(errors='ignore')
-                        
-                        # Command mismatch detection
-                        if known_commands:
-                            lines = decoded_data.strip().split('\n')
-                            for line in lines:
-                                if line:
-                                    command_name = line.split(' ')[0]
-                                    if command_name not in known_commands:
-                                        device_info['mismatch_count'] += 1
-                                        if device_info['mismatch_count'] >= self.MISMATCH_THRESHOLD:
-                                            # Find likely candidate
-                                            likely_device = self.find_likely_device_by_command(command_name)
-                                            if likely_device:
-                                                self.log_message(
-                                                    f"[WARNING] Mismatched commands detected on port {ser.port} for device '{device_name}'. "
-                                                    f"This may be '{likely_device['name']}' on a different COM port."
-                                                )
-                                            device_info['mismatch_count'] = 0 # Reset to prevent spam
-                                            
-                        self.log_message(f"[{device_name} -> UDP] {decoded_data}", to_file=True)
-                        if self.udp_sock:
-                            self.udp_sock.sendto(clean_data, (self.UDP_DEST_IP, self.UDP_DEST_PORT))
-                else:
-                    time.sleep(0.005)
+                if ser and ser.is_open:
+                    if is_rs485:
+                        # For RS485, wait for complete responses
+                        if ser.in_waiting:
+                            # Read all available data at once for RS485
+                            data = ser.read(ser.in_waiting)
+                            if data:
+                                clean_data = data.replace(b'\r\n', b'\n').replace(b'\r', b'\n')
+                                decoded_data = clean_data.decode(errors='ignore')
+
+                                self.log_message(f"[{device_name} -> UDP] {decoded_data}", to_file=True)
+                                if self.udp_sock:
+                                    self.udp_sock.sendto(clean_data, (self.UDP_DEST_IP, self.UDP_DEST_PORT))
+
+                            # Give RS485 slaves time to respond
+                            time.sleep(0.01)
+                        else:
+                            time.sleep(0.01)  # Polling interval for RS485
+                    else:
+                        # Original logic for non-RS485 devices
+                        if ser.in_waiting:
+                            data = ser.read(ser.in_waiting)
+                            if data:
+                                clean_data = data.replace(b'\r\n', b'\n').replace(b'\r', b'\n')
+                                decoded_data = clean_data.decode(errors='ignore')
+
+                                # Command mismatch detection
+                                if known_commands:
+                                    lines = decoded_data.strip().split('\n')
+                                    for line in lines:
+                                        if line:
+                                            command_name = line.split(' ')[0]
+                                            if command_name not in known_commands:
+                                                device_info['mismatch_count'] += 1
+                                                if device_info['mismatch_count'] >= self.MISMATCH_THRESHOLD:
+                                                    # Find likely candidate
+                                                    likely_device = self.find_likely_device_by_command(command_name)
+                                                    if likely_device:
+                                                        self.log_message(
+                                                            f"[WARNING] Mismatched commands detected on port {ser.port} for device '{device_name}'. "
+                                                            f"This may be '{likely_device['name']}' on a different COM port."
+                                                        )
+                                                    device_info['mismatch_count'] = 0  # Reset to prevent spam
+
+                                self.log_message(f"[{device_name} -> UDP] {decoded_data}", to_file=True)
+                                if self.udp_sock:
+                                    self.udp_sock.sendto(clean_data, (self.UDP_DEST_IP, self.UDP_DEST_PORT))
+                        else:
+                            time.sleep(0.005)
+
             except (serial.SerialException, PermissionError) as e:
                 self.log_message(f"[{device_name} SERIAL READ ERROR] {e}. Attempting to reopen serial port...")
                 try:
@@ -616,7 +667,7 @@ class DCSBIOSSerialManager(tk.Tk):
             except Exception as e:
                 self.log_message(f"[{device_name} UNEXPECTED SERIAL ERROR] {e}")
                 time.sleep(5)
-    
+
     def find_likely_device_by_command(self, command):
         """Finds a device profile that contains the given command."""
         for device in self.devices:
@@ -629,7 +680,7 @@ class DCSBIOSSerialManager(tk.Tk):
         return len(data) >= 2 and data[0] == 0x55 and data[1] == 0x55
 
     def udp_to_serial(self):
-        """Thread function to listen for UDP packets and forward to active serial ports."""
+        """Thread function to listen for UDP packets and forward to active serial ports with RS485 support."""
         while not self.stop_threads.is_set():
             try:
                 if not self.udp_sock:
@@ -645,8 +696,27 @@ class DCSBIOSSerialManager(tk.Tk):
                 for com_port, ser_conn in self.serial_connections.items():
                     try:
                         if ser_conn and ser_conn.is_open:
-                            ser_conn.write(data)
-                            time.sleep(0.001)
+                            # Find the device info for this port
+                            device_info = None
+                            for device in self.devices:
+                                if device.get('com_port') == com_port and device.get('enabled', False):
+                                    device_info = device
+                                    break
+
+                            # Check if this is an RS485 master device
+                            is_rs485_master = (device_info and device_info.get('is_rs485', False))
+
+                            if is_rs485_master:
+                                # RS485 master needs special timing
+                                ser_conn.write(data)
+                                ser_conn.flush()  # Ensure data is transmitted immediately
+                                rs485_delay = device_info.get('rs485_delay', 0.01)
+                                time.sleep(rs485_delay)  # Configurable delay for RS485 master-slave timing
+                            else:
+                                # Normal serial communication
+                                ser_conn.write(data)
+                                time.sleep(0.001)
+
                     except Exception as e:
                         self.log_message(f"[UDP -> {com_port} WRITE ERROR] {e}")
 
@@ -668,11 +738,11 @@ class DCSBIOSSerialManager(tk.Tk):
             self.log_text.configure(state=tk.NORMAL)
             self.log_text.insert(tk.END, full_message + "\n")
             self.log_text.configure(state=tk.DISABLED)
-            self.log_text.see(tk.END) # Auto-scroll
+            self.log_text.see(tk.END)  # Auto-scroll
         except AttributeError:
             # Log widget not yet created, so we can't write to it.
             pass
-        
+
         if self.logging_enabled.get() and to_file:
             try:
                 with open(self.log_file, 'a') as f:
@@ -681,7 +751,7 @@ class DCSBIOSSerialManager(tk.Tk):
                 self.log_message(f"[LOG FILE ERROR] {e}")
 
     def load_config(self):
-        """Loads configuration from the config.ini file."""
+        """Loads configuration from the config.ini file with RS485 support."""
         config = ConfigParser()
         if os.path.exists(self.config_file):
             config.read(self.config_file)
@@ -696,6 +766,8 @@ class DCSBIOSSerialManager(tk.Tk):
                     device = dict(config.items(section))
                     device['baud_rate'] = int(device['baud_rate'])
                     device['enabled'] = config.getboolean(section, 'enabled', fallback=False)
+                    device['is_rs485'] = config.getboolean(section, 'is_rs485', fallback=False)
+                    device['rs485_delay'] = config.getfloat(section, 'rs485_delay', fallback=0.01)
                     # Load commands as a set
                     commands_str = device.get('commands', '')
                     device['commands'] = set(commands_str.split(',')) if commands_str else set()
@@ -705,9 +777,9 @@ class DCSBIOSSerialManager(tk.Tk):
             self.save_config()
 
     def save_config(self):
-        """Saves the current configuration to the config.ini file."""
+        """Saves the current configuration to the config.ini file with RS485 support."""
         config = ConfigParser()
-        
+
         config['Settings'] = {
             'log_to_file': str(self.logging_enabled.get()),
             'minimize_to_tray': str(self.minimize_to_tray_var.get()),
@@ -723,7 +795,9 @@ class DCSBIOSSerialManager(tk.Tk):
                 'com_port': device.get('com_port', ''),
                 'baud_rate': str(device['baud_rate']),
                 'enabled': str(device['enabled_var'].get() if 'enabled_var' in device else device['enabled']),
-                'commands': commands_str
+                'commands': commands_str,
+                'is_rs485': str(device.get('is_rs485', False)),
+                'rs485_delay': str(device.get('rs485_delay', 0.01))
             }
 
         try:
@@ -739,9 +813,8 @@ class DCSBIOSSerialManager(tk.Tk):
             return
 
         self.save_config()
-        
-        # Use the correct, determined path for the executable
-        app_path = os.path.join(self.base_path, os.path.basename(sys.executable))
+
+        app_path = os.path.abspath(sys.argv[0])
 
         try:
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, self.RUN_KEY, 0, winreg.KEY_WRITE) as key:
@@ -756,7 +829,7 @@ class DCSBIOSSerialManager(tk.Tk):
                         self.log_message("Application was not in Windows startup list.")
         except Exception as e:
             messagebox.showerror("Registry Error", f"Failed to modify Windows startup registry: {e}")
-            self.start_with_windows_var.set(not self.start_with_windows_var.get()) # Revert checkbox state
+            self.start_with_windows_var.set(not self.start_with_windows_var.get())  # Revert checkbox state
             self.save_config()
             self.log_message(f"Registry access failed: {e}")
 
@@ -786,7 +859,7 @@ class DCSBIOSSerialManager(tk.Tk):
                 ser_conn.close()
             except Exception:
                 pass
-        
+
     def create_tray_icon(self):
         """Creates and manages the system tray icon."""
         if not HAS_PYSTRAY:
@@ -818,6 +891,7 @@ class DCSBIOSSerialManager(tk.Tk):
         if self.tray_icon:
             self.tray_icon.stop()
             self.tray_icon = None
+
 
 if __name__ == '__main__':
     root = DCSBIOSSerialManager()
